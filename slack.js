@@ -5,6 +5,7 @@ const functions = require("firebase-functions");
 const { google } = require("googleapis");
 const { WebhookClient } = require("dialogflow-fulfillment");
 const { Text, Card, Payload, Suggestion } = require("dialogflow-fulfillment");
+
 const bigquery = require("@google-cloud/bigquery");
 const request = require("request-promise-native"); // For third-party HTTP requests
 
@@ -13,8 +14,8 @@ const calendar = google.calendar("v3");
 const admin = google.admin("directory_v1");
 
 /* ADMIN */
-var adminId = "grant.currie_adm@itv.com";
-var custId = "C00lku96g";
+const adminId = "ralf.yap@dev.itv.com";
+const custId = "C03fv0qmc";
 
 /* SERVICE ACCOUNT */
 const serviceAccountAuth = new google.auth.JWT(
@@ -42,6 +43,7 @@ const ROOM_CAPACITY_INTENT = "Room Capacity";
 const ROOM_OCCUPANCY_INTENT = "Room Occupancy";
 const BOOK_ROOM_INTENT = "Book Room";
 const BOOK_ROOM_FOLLOWUP_INTENT = "Book Room - yes";
+const SET_OFFICE_INTENT = "Set Office";
 const HELP_INTENT = "Help";
 const DOG_INTENT = "Dog";
 
@@ -51,7 +53,7 @@ const INVALID_ROOM_MSG = "I'm sorry, but I can't seem to find that room.\n Could
 
 const TIME_ZONE_OFFSET = "+01:00";
 
-var OFFICE_ID = 0;
+var OFFICE;
 
 const ICONS = {
   Phone: "https://img.icons8.com/color/48/000000/phone.png",
@@ -71,19 +73,18 @@ const GREEN = "#00C853";
 const RED = "#F50057";
 
 /* API FUNCTIONS */
-function getRooms(officeId) {
-  var apiQuery;
-  if (officeId) {
-    apiQuery = 'buildingId="London Waterhouse Square"';
-  } else {
-    apiQuery = 'buildingId="London Gray\'s Inn Road"';
-  }
+function getRooms(office) {
+  // if (officeId) {
+  //   apiQuery = 'buildingId="London Waterhouse Square"';
+  // } else {
+  //   apiQuery = 'buildingId="London Gray\'s Inn Road"';
+  // }
   return new Promise((resolve, reject) => {
     admin.resources.calendars.list(
       {
         auth: serviceAccountAuth,
         customer: custId,
-        query: apiQuery
+        query: `buildingId=\"${office}\"`
       },
       (err, res) => {
         if (err) {
@@ -126,7 +127,7 @@ function calFreebusy(timeMin, timeMax, emails) {
 
 // List the events of a certain calendar resource
 function calEventsList(calendarId, timeMin, timeMax) {
-  var today = new Date().toISOString().split("T")[0] + "T00:00:00" + TIME_ZONE_OFFSET;
+  const today = new Date().toISOString().split("T")[0] + "T00:00:00" + TIME_ZONE_OFFSET;
   return new Promise((resolve, reject) => {
     calendar.events.list(
       {
@@ -151,15 +152,22 @@ function calEventsList(calendarId, timeMin, timeMax) {
 // Insert a new calendar event
 function calEventsInsert(calendarId, resource) {
   return new Promise((resolve, reject) => {
-    calendar.events.insert({ auth: serviceAccountAuth, calendarId: calendarId, resource: resource }, (err, res) => {
-      if (err) {
-        console.log(err);
-        reject(err);
-      } else {
-        console.log("EVENT CREATED");
-        resolve(res);
+    calendar.events.insert(
+      {
+        auth: serviceAccountAuth,
+        calendarId: calendarId,
+        resource: resource
+      },
+      (err, res) => {
+        if (err) {
+          console.log(err);
+          reject(err);
+        } else {
+          console.log("EVENT CREATED");
+          resolve(res);
+        }
       }
-    });
+    );
   });
 }
 
@@ -246,6 +254,51 @@ function dateToString(date) {
   return date.toLocaleString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "Europe/London" });
 }
 
+function emailFilter(status, date, dateTimeStart, busy, queryType) {
+  var busyDate;
+  var busyStartTime;
+  switch (status) {
+    case 0:
+      return true;
+    case 1:
+      if (busy.length === 0) {
+        return true;
+      } else {
+        if (queryType) {
+          busyDate = dateToString(new Date(Date.parse(date)));
+          busyStartTime = new Date(Date.parse(busy[0].start));
+          if (dateTimeStart < busyStartTime) {
+            return true;
+          } else {
+            return false;
+          }
+        } else {
+          return true;
+        }
+      }
+      break;
+    case 2:
+      if (busy.length > 0) {
+        if (queryType) {
+          busyDate = dateToString(new Date(Date.parse(date)));
+          busyStartTime = new Date(Date.parse(busy[0].start));
+          if (dateTimeStart < busyStartTime) {
+            return false;
+          } else {
+            return true;
+          }
+        } else {
+          return true;
+        }
+      } else {
+        return false;
+      }
+      break;
+    default:
+      return true;
+  }
+}
+
 function byTime(a, b) {
   const aDateTime = new Date(Date.parse(a.start.dateTime));
   const bDateTime = new Date(Date.parse(b.start.dateTime));
@@ -327,60 +380,7 @@ function rangeOf(arr) {
   return Math.max(...arr) - Math.min(...arr);
 }
 
-function emailFilter(status, date, dateTimeStart, busy, queryType) {
-  var busyDate;
-  var busyStartTime;
-  switch (status) {
-    case 0:
-      return true;
-    case 1:
-      if (busy.length === 0) {
-        return true;
-      } else {
-        if (queryType) {
-          busyDate = dateToString(new Date(Date.parse(date)));
-          busyStartTime = new Date(Date.parse(busy[0].start));
-          if (dateTimeStart.getHours() < busyStartTime.getHours()) {
-            return true;
-          } else {
-            return false;
-          }
-        } else {
-          if (date < busyStartTime) {
-            return true;
-          } else {
-            return false;
-          }
-        }
-      }
-      break;
-    case 2:
-      if (busy.length > 0) {
-        if (queryType) {
-          busyDate = dateToString(new Date(Date.parse(date)));
-          busyStartTime = new Date(Date.parse(busy[0].start));
-          if (dateTimeStart.getHours() < busyStartTime.getHours()) {
-            return false;
-          } else {
-            return true;
-          }
-        } else {
-          if (date < busyStartTime) {
-            return false;
-          } else {
-            return true;
-          }
-        }
-      } else {
-        return false;
-      }
-      break;
-    default:
-      return true;
-  }
-}
-
-function searchRoomsBlocks(rooms, calendars, date, dateTimeStart, queryType) {
+function searchRoomsBlocks(rooms, calendars, dateTimeStart, queryType) {
   var blocks = [];
 
   rooms.forEach(room => {
@@ -403,10 +403,10 @@ function searchRoomsBlocks(rooms, calendars, date, dateTimeStart, queryType) {
         if (dateTimeStart < new Date(Date.parse(calendarsSorted[0].start))) {
           status = `_Available at ${timeToString(new Date(dateTimeStart))}_\n_Booked at_`;
         } else {
-          status = "_Booked at_";
+          status = "_Booked until_";
         }
       } else {
-        if (date < new Date(Date.parse(calendarsSorted[0].start))) {
+        if (dateTimeStart < new Date(Date.parse(calendarsSorted[0].start))) {
           status = `_Available now_\n_Booked at_`;
         } else {
           status = "_Booked at_";
@@ -434,10 +434,16 @@ function searchRoomsBlocks(rooms, calendars, date, dateTimeStart, queryType) {
       { type: "divider" }
     ];
 
-    calendarsSorted.forEach(event => {
-      block[0].text.text =
-        block[0].text.text + `\n*${timeToString(new Date(Date.parse(event.start)))} to ${timeToString(new Date(Date.parse(event.end)))}*`;
-    });
+    if (queryType) {
+      calendarsSorted.forEach(event => {
+        block[0].text.text = block[0].text.text + `\n*${timeToString(new Date(Date.parse(event.end)))}*`;
+      });
+    } else {
+      calendarsSorted.forEach(event => {
+        block[0].text.text =
+          block[0].text.text + `\n*${timeToString(new Date(Date.parse(event.start)))} to ${timeToString(new Date(Date.parse(event.end)))}*`;
+      });
+    }
 
     blocks = blocks.concat(block);
   });
@@ -526,11 +532,13 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
       status = 0;
     }
 
-    return getRooms(OFFICE_ID)
+    return getRooms(OFFICE)
       .then(rooms => {
         var allRooms = rooms.data.items;
         var allEmails = allRooms.map(room => {
-          return { id: room.resourceEmail };
+          return {
+            id: room.resourceEmail
+          };
         });
         var calendars = {};
 
@@ -593,12 +601,14 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                             text: titleText
                           }
                         },
-                        { type: "divider" }
+                        {
+                          type: "divider"
+                        }
                       ]
                     }
                   ]
                 };
-                const blocks = searchRoomsBlocks(filteredRooms, calendars, date, dateTimeStart, queryType);
+                const blocks = searchRoomsBlocks(filteredRooms, calendars, dateTimeStart, queryType);
 
                 if (filteredRooms.length < 6) {
                   // Because Slack onbly supports up to 20 attachments...
@@ -614,7 +624,6 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                     parameters: {
                       rooms: filteredRooms.slice(5),
                       calendars: calendars,
-                      date: date,
                       dateTimeStart: dateTimeStart,
                       queryType: queryType
                     }
@@ -642,7 +651,6 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   function searchRoomsFollowupYes(agent) {
     const context = agent.getContext("searchrooms-followup");
     const calendars = context.parameters.calendars;
-    const date = context.parameters.date;
     const dateTimeStart = context.parameters.dateTimeStart;
     const queryType = context.parameters.queryType;
     var filteredRooms = context.parameters.rooms;
@@ -651,22 +659,33 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
       attachments: [
         {
           fallback: "Here's some more rooms.",
-          blocks: [{ type: "divider" }]
+          blocks: [
+            {
+              type: "divider"
+            }
+          ]
         }
       ]
     };
 
-    const blocks = searchRoomsBlocks(filteredRooms, calendars, date, dateTimeStart, queryType);
+    const blocks = searchRoomsBlocks(filteredRooms, calendars, dateTimeStart, queryType);
 
     if (filteredRooms.length < 5) {
       payload.attachments[0].blocks = payload.attachments[0].blocks.concat(blocks);
-      agent.setContext({ name: "searchrooms-followup", lifespan: 0 });
+      agent.setContext({
+        name: "searchrooms-followup",
+        lifespan: 0
+      });
     } else {
       payload.attachments[0].blocks = payload.attachments[0].blocks.concat(blocks.slice(0, 15));
       payload.attachments[0].blocks = payload.attachments[0].blocks.concat(yesNoBlock("Would you like me to show you more rooms?", "Yes", "No"));
       agent.setContext({
         name: "searchrooms-followup",
-        parameters: { rooms: filteredRooms.slice(5), calendars: calendars, queryType: queryType }
+        parameters: {
+          rooms: filteredRooms.slice(5),
+          calendars: calendars,
+          queryType: queryType
+        }
       });
     }
 
@@ -688,7 +707,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     if (!room) {
       agent.add(INVALID_ROOM_MSG);
     } else {
-      return getRooms(OFFICE_ID)
+      return getRooms(OFFICE)
         .then(rooms => {
           var roomInfo = rooms.data.items.filter(item => {
             return item.resourceName == room;
@@ -710,14 +729,12 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                         new Date(Date.parse(events[0].start.dateTime))
                       )}!`
                     );
-                    if (roomInfo.resourceName === "7.1") {
-                      agent.add("<https://my.matterport.com/show/?m=fBscGfRt5in|Wanna see something cool?>");
-                    }
-                    // agent.add(new Suggestion(`Book ${roomInfo.userVisibleDescription}`));
+                    agent.add(new Suggestion(`Book ${roomInfo.userVisibleDescription}`));
                   } else {
                     const event = events[0];
                     var timeText;
                     var titleText;
+
                     if (agent.query.includes("now")) {
                       timeText = `until ${timeToString(new Date(Date.parse(event.end.dateTime)))}`;
                       titleText = `The meeting _${event.summary}_ is in progress in ${
@@ -742,7 +759,9 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                                 text: titleText
                               }
                             },
-                            { type: "divider" },
+                            {
+                              type: "divider"
+                            },
                             {
                               type: "section",
                               text: {
@@ -778,7 +797,9 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                               text: `It looks like ${roomInfo.userVisibleDescription} is booked at these times:`
                             }
                           },
-                          { type: "divider" },
+                          {
+                            type: "divider"
+                          },
                           {
                             type: "section",
                             text: {
@@ -841,25 +862,22 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                       }
                     ]
                   };
-                  // payload.attachments[0].blocks = payload.attachments[0].blocks.concat(
-                  //   yesNoBlock(
-                  //     `Would you like to book ${roomInfo.userVisibleDescription} at ${timeToString(dateTimeStart)}?`,
-                  //     `Book room ${roomInfo.resourceName} on ${dateToString(new Date(Date.parse(date)))} at ${timeToString(dateTimeStart)}`,
-                  //     `No`
-                  //   )
-                  // );
-                  if (roomInfo.resourceName === "7.1") {
-                    payload.attachments[0].blocks[0].text.text =
-                      payload.attachments[0].blocks[0].text.text + "\n<https://my.matterport.com/show/?m=fBscGfRt5in|Wanna see something cool?>";
-                  }
+                  payload.attachments[0].blocks = payload.attachments[0].blocks.concat(
+                    yesNoBlock(
+                      `Would you like to book ${roomInfo.userVisibleDescription} at ${timeToString(dateTimeStart)}?`,
+                      `Book room ${roomInfo.resourceName} on ${dateToString(new Date(Date.parse(date)))} at ${timeToString(dateTimeStart)}`,
+                      `No`
+                    )
+                  );
                   agent.add(new Payload(agent.SLACK, payload));
                 } else {
-                  agent.add(`There are currently no bookings for ${roomInfo.userVisibleDescription} on ${dateToString(new Date(Date.parse(date)))}.`);
-                  if (roomInfo.resourceName === "7.1") {
-                    agent.add("<https://my.matterport.com/show/?m=fBscGfRt5in|Wanna see something cool?>");
-                  }
-                  // agent.add(new Suggestion(`Book room ${roomInfo.resourceName}`));
-                  // agent.add(new Suggestion("No"));
+                  agent.add(
+                    `There are currently no bookings for ${roomInfo.userVisibleDescription} on ${dateToString(
+                      new Date(Date.parse(date))
+                    )}.\nWould you like to book this room?`
+                  );
+                  agent.add(new Suggestion(`Book room ${roomInfo.resourceName}`));
+                  agent.add(new Suggestion("No"));
                 }
                 // agent.add(new Suggestion("Does it have a phone?"));
                 // agent.add(new Suggestion("Does it have a TV?"));
@@ -867,8 +885,11 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
               }
               agent.setContext({
                 name: "roomstatus-followup",
-                lifespan: 3,
-                parameters: { roomInQuestion: roomInfo.resourceName }
+                lifespan: 7,
+                parameters: {
+                  roomInQuestion: roomInfo.resourceName,
+                  dateInQuestion: date
+                }
               });
             })
             .catch(err => {
@@ -897,7 +918,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     if (!room) {
       agent.add(INVALID_ROOM_MSG);
     } else {
-      return getRooms(OFFICE_ID)
+      return getRooms(OFFICE)
         .then(rooms => {
           var roomInfo = rooms.data.items.filter(item => {
             return item.resourceName == room;
@@ -955,7 +976,12 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
             const block = [
               {
                 type: "context",
-                elements: [{ type: "plain_text", text: "None" }]
+                elements: [
+                  {
+                    type: "plain_text",
+                    text: "None"
+                  }
+                ]
               }
             ];
             payload.attachments[0].blocks = payload.attachments[0].blocks.concat(block);
@@ -981,7 +1007,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     if (!room) {
       agent.add(INVALID_ROOM_MSG);
     } else {
-      return getRooms(OFFICE_ID)
+      return getRooms(OFFICE)
         .then(rooms => {
           var roomInfo = rooms.data.items.filter(item => {
             return item.resourceName == room;
@@ -992,7 +1018,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
             titleText = `*${roomInfo.userVisibleDescription}* can seat ${roomInfo.capacity} people.`;
           } else {
             if (hasCapacity(roomInfo, number)) {
-              titleText = `Yep, it looks like you can fit ${number} people into *${roomInfo.userVisibleDescription}*.`;
+              titleText = `Yep, it looks like you can just about squeeze ${number} people into *${roomInfo.userVisibleDescription}*.`;
             } else {
               titleText = `Sorry, but *${roomInfo.userVisibleDescription}* can only seat ${roomInfo.capacity} people.`;
             }
@@ -1037,18 +1063,178 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   }
 
   function bookRoom(agent) {
-    agent.setContext({ name: "roomstatus-followup", lifespan: 0 });
-    if (agent.parameters.title && !agent.parameters.room && !agent.parameters.date && !agent.parameters.time && !agent.parameters.duration) {
-      agent.setFollowupEvent("fallback");
-    } else {
-      agent.add("Sorry, this feature is still under development and is not available at the moment.");
+    const context = agent.getContext("roomstatus-followup");
+    var room = agent.parameters.room;
+    var date = agent.parameters.date;
+    const time = agent.parameters.time;
+    const duration = agent.parameters.duration;
+    const title = agent.parameters.title;
+
+    if (title && !room && !date && !time && !duration) {
+      agent.setFollowupEvent("help");
+      return null;
     }
-    // agent.setContext({
-    //   name: "bookroom-dog",
-    //   lifespan: 1,
-    //   parameters: { message: "Sorry, this feature still in testing and is not available at the moment.\nHere's a GIF of a dog instead." }
-    // });
-    // agent.setFollowupEvent("dog");
+
+    if (context && !room) {
+      room = context.parameters.roomInQuestion;
+    }
+
+    if (context && date === "") {
+      date = context.parameters.dateInQuestion;
+    }
+
+    if (!room) {
+      agent.add("Which room would you like to book?");
+    } else if (date === "") {
+      agent.add("On which day?");
+      agent.add(new Suggestion("Today"));
+      agent.add(new Suggestion("Tomorrow"));
+    } else if (!time) {
+      agent.add("What time would you like to book this room for?");
+      agent.add(new Suggestion("11am"));
+      agent.add(new Suggestion("12pm"));
+      agent.add(new Suggestion("2pm"));
+      agent.add(new Suggestion("3pm"));
+      agent.add(new Suggestion("4pm"));
+    } else if (time && !duration) {
+      agent.add("And for how long?");
+      agent.add(new Suggestion("30 minutes"));
+      agent.add(new Suggestion("45 minutes"));
+      agent.add(new Suggestion("1 hour"));
+      agent.add(new Suggestion("1.5 hours"));
+    } else if (!title) {
+      agent.add('What would you like to call this meeting?\nPlease surround the name in quotation marks, like "Meeting Name"');
+    }
+
+    if (room && date && time && duration && title) {
+      var resource = {
+        summary: title.replace(/\"/g, ""),
+        end: {
+          dateTime: ""
+        },
+        start: {
+          dateTime: ""
+        },
+        creator: {
+          email: ""
+        },
+        organizer: {
+          email: ""
+        },
+        location: "",
+        attendees: [],
+        description: "booked by ITV Roombot",
+        colorId: "3" // purple
+      };
+      return getRooms(OFFICE).then(rooms => {
+        var roomInfo = rooms.data.items.filter(item => {
+          return item.resourceName == room;
+        });
+
+        if (roomInfo.length === 0) {
+          agent.add(INVALID_ROOM_MSG);
+        } else {
+          roomInfo = roomInfo[0];
+        }
+
+        return slackGetUserProfile()
+          .then(res => {
+            const profile = JSON.parse(res.body).profile;
+            resource.creator.email = profile.email;
+            resource.organizer.email = profile.email;
+            resource.attendees.push({
+              email: profile.email,
+              organizer: true,
+              responseStatus: "accepted"
+            });
+            resource.attendees.push({
+              email: roomInfo.resourceEmail,
+              displayName: roomInfo.generatedResourceName,
+              self: true,
+              resource: true,
+              responseStatus: "accepted"
+            });
+            resource.location = roomInfo.generatedResourceName;
+            resource.start.dateTime = new Date(Date.parse(date.split("T")[0] + "T" + time.split("T")[1])).toISOString();
+            var timeAdjusted;
+            switch (duration.unit) {
+              case "min":
+                timeAdjusted = new Date(new Date(time).setMinutes(new Date(time).getMinutes() + duration.amount));
+                resource.end.dateTime = new Date(Date.parse(date.split("T")[0] + "T" + timeAdjusted.toISOString().split("T")[1])).toISOString();
+                break;
+              case "h":
+                timeAdjusted = new Date(new Date(time).setHours(new Date(time).getHours() + duration.amount));
+                resource.end.dateTime = new Date(Date.parse(date.split("T")[0] + "T" + timeAdjusted.toISOString().split("T")[1])).toISOString();
+                break;
+              default:
+                break;
+            }
+            console.log(resource);
+            return calFreebusy(resource.start.dateTime, resource.end.dateTime, [
+              {
+                id: roomInfo.resourceEmail
+              }
+            ]).then(bookings => {
+              if (bookings.data.calendars[roomInfo.resourceEmail].busy.length > 0) {
+                agent.add(`Sorry! Looks like someone has already booked ${roomInfo.userVisibleDescription}.`);
+                agent.add(new Suggestion(`Who booked ${roomInfo.resourceName} at ${timeToString(new Date(Date.parse(resource.start.dateTime)))}?`));
+              } else {
+                var payload = {
+                  attachments: [
+                    {
+                      fallback: "Event created",
+                      blocks: [
+                        {
+                          type: "section",
+                          text: {
+                            type: "mrkdwn",
+                            text: `Here's a summary of your booking:`
+                          }
+                        },
+                        {
+                          type: "divider"
+                        },
+                        {
+                          type: "section",
+                          text: {
+                            type: "mrkdwn",
+                            text: `*${resource.summary}* ・ ${dateToString(new Date(Date.parse(date)))}\n${timeToString(
+                              new Date(Date.parse(resource.start.dateTime))
+                            )} to ${timeToString(new Date(Date.parse(resource.end.dateTime)))}`
+                          }
+                        },
+                        {
+                          type: "context",
+                          elements: [
+                            {
+                              type: "mrkdwn",
+                              text: `*${roomInfo.userVisibleDescription}*\norganised by ${nameFromEmail(resource.organizer.email)}`
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                };
+                payload.attachments[0].blocks = payload.attachments[0].blocks.concat(
+                  yesNoBlock("Would you like to confirm the booking?", "Yes", "No")
+                );
+                agent.setContext({
+                  name: "bookroom-followup",
+                  lifespan: 1,
+                  parameters: {
+                    resource: resource
+                  }
+                });
+                agent.add(new Payload(agent.SLACK, payload));
+              }
+            });
+          })
+          .catch(err => {
+            console.log(err);
+          });
+      });
+    }
   }
 
   function bookRoomFollowupYes(agent) {
@@ -1063,7 +1249,9 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
               color: GREEN,
               fallback: "Done! Your meeting has been booked!",
               blocks: [
-                { type: "divider" },
+                {
+                  type: "divider"
+                },
                 {
                   type: "context",
                   elements: [
@@ -1072,7 +1260,10 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                       image_url: ICONS.cal_green,
                       alt_text: "icon"
                     },
-                    { type: "mrkdwn", text: `*Done! Your meeting has been booked!*` }
+                    {
+                      type: "mrkdwn",
+                      text: `*Done! Your meeting has been booked!*`
+                    }
                   ]
                 }
               ]
@@ -1091,7 +1282,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     var room = agent.parameters.room;
     var time = agent.parameters.time.split("T")[1];
     var date;
-    const todate = new Date();
+    var todate = new Date();
 
     if (!time || agent.query.includes("now")) {
       time = new Date(todate.setMinutes(todate.getMinutes() - 15)).toISOString().split("T")[1];
@@ -1103,6 +1294,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
       .split("T"); // Corrected datetime to offset +00:00
     date = datetime[0];
     time = datetime[1];
+    todate = new Date();
 
     if (context && room === "") {
       room = context.parameters.roomInQuestion;
@@ -1111,40 +1303,81 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     if (room === "") {
       agent.add(INVALID_ROOM_MSG);
     } else {
-      const query = "SELECT * FROM `roombot-oknmqj.sensors.data` WHERE date = " + `\"${date}\"` + " AND time > " + `\"${time}\"`;
-      const options = { query: query, location: "US" };
-      return BigQueryClient.query(options)
-        .then(res => {
-          console.log(res[0]);
-          const data = res[0];
-          const tempData = data.map(item => {
-            return parseInt(item.temperature);
+      return getRooms(OFFICE)
+        .then(rooms => {
+          var roomInfo = rooms.data.items.filter(item => {
+            return item.resourceName === room;
           });
-          const humData = data.map(item => {
-            return parseInt(item.humidity);
-          });
-          const motData = data.map(item => {
-            return parseInt(item.motion);
-          });
-          console.log(tempData);
-          console.log(humData);
-          console.log(motData);
 
-          const tempRange = rangeOf(tempData);
-          const humRange = rangeOf(humData);
-          const motionDetected = motData.filter(val => val === 1).length;
-
-          console.log(tempRange, humRange, motionDetected);
-
-          if ((tempRange > 2 && humRange > 5 && motionDetected > 3) || humRange > 10 || motionDetected > 20) {
-            agent.add("I think there might be someone in there.");
+          if (roomInfo.length === 0) {
+            agent.add(INVALID_ROOM_MSG);
           } else {
-            agent.add("There doesn't appear to be anyone there.");
+            roomInfo = roomInfo[0];
           }
+
+          const query =
+            "SELECT * FROM `roombot-oknmqj.sensors.data` WHERE room = " +
+            `\"${roomInfo.resourceName}\"` +
+            " AND date = " +
+            `\"${date}\"` +
+            " AND time > " +
+            `\"${time}\"`;
+          const options = {
+            query: query,
+            location: "US"
+          };
+          return BigQueryClient.query(options)
+            .then(res => {
+              console.log(res[0]);
+              const data = res[0];
+
+              if (data.length > 0) {
+                const tempData = data.map(item => {
+                  return parseInt(item.temperature);
+                });
+                const humData = data.map(item => {
+                  return parseInt(item.humidity);
+                });
+                const motData = data.map(item => {
+                  return parseInt(item.motion);
+                });
+                console.log(tempData);
+                console.log(humData);
+                console.log(motData);
+
+                const tempRange = rangeOf(tempData);
+                const humRange = rangeOf(humData);
+                const motionDetected = motData.filter(val => val === 1).length;
+
+                console.log(tempRange, humRange, motionDetected);
+
+                if ((tempRange > 2 && humRange > 5 && motionDetected > 3) || humRange > 10 || motionDetected > 20) {
+                  agent.add(`I think there might be someone in ${roomInfo.userVisibleDescription}.`);
+                } else {
+                  agent.add(`There doesn't appear to be anyone in ${roomInfo.userVisibleDescription}.`);
+                }
+              } else {
+                agent.add(`Sorry, I don't have any data for that room.`);
+              }
+            })
+            .catch(err => {
+              console.log(err);
+            });
         })
         .catch(err => {
           console.log(err);
         });
+    }
+  }
+
+  function setOffice(agent) {
+    const office = agent.parameters.office;
+    console.log(office);
+    if (!office) {
+      agent.add("What is the building name?");
+    } else {
+      OFFICE = agent.parameters.office;
+      agent.add(`Office has been set to ${OFFICE}.`);
     }
   }
 
@@ -1154,9 +1387,10 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     agent.add(new Suggestion("Will 2.3 be free from 4-5pm?"));
     agent.add(new Suggestion("Is 7.7 available tomorrow?"));
     agent.add(new Suggestion("Who booked 4.4 today?"));
-    agent.add(new Suggestion("Does room 5.1 have Hangouts?"));
+    // agent.add(new Suggestion("Does room 5.1 have Hangouts?"));
     // agent.add(new Suggestion("Is there someone in 2.1?"));
-    // agent.add(new Suggestion("Woof"));
+    agent.add(new Suggestion("Woof"));
+    agent.add("If you would like to set your office, just tell me the building name at any time.");
   }
 
   function dog(agent) {
@@ -1196,6 +1430,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   intentMap.set(ROOM_OCCUPANCY_INTENT, roomOccupancy);
   intentMap.set(BOOK_ROOM_INTENT, bookRoom);
   intentMap.set(BOOK_ROOM_FOLLOWUP_INTENT, bookRoomFollowupYes);
+  intentMap.set(SET_OFFICE_INTENT, setOffice);
   intentMap.set(HELP_INTENT, help);
   intentMap.set(DOG_INTENT, dog);
   agent.handleRequest(intentMap);
