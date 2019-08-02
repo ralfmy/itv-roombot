@@ -13,8 +13,8 @@ const calendar = google.calendar("v3");
 const admin = google.admin("directory_v1");
 
 /* ADMIN */
-var adminId = "grant.currie_adm@itv.com";
-var custId = "C00lku96g";
+var adminId = process.env.ADMIN_ID;
+var custId = process.env.CUST_ID;
 
 /* SERVICE ACCOUNT */
 const serviceAccountAuth = new google.auth.JWT(
