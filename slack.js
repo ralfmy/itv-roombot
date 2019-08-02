@@ -21,12 +21,7 @@ const serviceAccountAuth = new google.auth.JWT(
   process.env.SA_CLIENT_EMAIL,
   null,
   process.env.SA_PRIVATE_KEY.replace(/\\n/g, "\n"),
-  [
-    "https://www.googleapis.com/auth/calendar",
-    // "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/admin.directory.resource.calendar"
-    // "https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly"
-  ],
+  ["https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/admin.directory.resource.calendar"],
   adminId
 );
 
