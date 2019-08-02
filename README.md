@@ -1,6 +1,8 @@
 # ITV RoomBot
 A meeting room assistant for ITV's London offices.
+
 ---
+
 ## The Problem
 The process of finding and booking meeting rooms at ITV offices is leaves a lot to be desired - it's often confusing, convoluted, and crude. ITV staff have consistently voiced their dissatisfaction with the current system and would benefit from a re-thinking and a *technologisation* of the meeting room experience.
 
