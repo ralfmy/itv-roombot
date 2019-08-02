@@ -1,5 +1,4 @@
 # ITV RoomBot
-A meeting room assistant for ITV's London offices.
 
 ---
 
