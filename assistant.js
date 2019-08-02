@@ -14,8 +14,8 @@ const calendar = google.calendar("v3");
 const admin = google.admin("directory_v1");
 
 /* ADMIN */
-const adminId = "ralf.yap@dev.itv.com";
-const custId = "C03fv0qmc";
+const adminId = process.env.ADMIN_ID;
+const custId = process.env.CUST_ID;
 
 /* SERVICE ACCOUNT */
 const serviceAccountAuth = new google.auth.JWT(
