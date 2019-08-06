@@ -1,4 +1,5 @@
 "use strict";
+const VERSION = "1.0";
 
 /* REQUIREMENTS */
 const functions = require("firebase-functions");
@@ -37,6 +38,7 @@ const ROOM_CAPACITY_INTENT = "Room Capacity";
 const ROOM_OCCUPANCY_INTENT = "Room Occupancy";
 const BOOK_ROOM_INTENT = "Book Room";
 const BOOK_ROOM_FOLLOWUP_INTENT = "Book Room - yes";
+const GITHUB_INTENT = "GitHub";
 const HELP_INTENT = "Help";
 const DOG_INTENT = "Dog";
 
@@ -158,6 +160,7 @@ function calEventsInsert(calendarId, resource) {
   });
 }
 
+// Get Slack user information - for booking rooms
 function slackGetUserProfile() {
   return new Promise((resolve, reject) => {
     request.get(`https://slack.com/api/users.profile.get?token=${process.env.SLACK_OAUTH_TOKEN}&pretty=1`, (err, res) => {
@@ -171,7 +174,7 @@ function slackGetUserProfile() {
   });
 }
 
-/* DOG */
+// Dog
 function dogAPI() {
   return new Promise((resolve, reject) => {
     request.get("https://api.giphy.com/v1/gifs/random?api_key=PKYwC19VlyF2Ve7ezkKSHqrBWHNg3fiu&tag=dog&rating=G", (err, res) => {
@@ -257,6 +260,7 @@ function byTime(a, b) {
   }
 }
 
+// Check if a room has a specified feature
 function hasFeatures(room, features) {
   var result = true;
   if (features.length === 0) {
@@ -279,6 +283,7 @@ function hasFeatures(room, features) {
   return result;
 }
 
+// Check if a room has a certain capacity
 function hasCapacity(room, capacity) {
   if (capacity !== "") {
     return room.capacity >= capacity;
@@ -287,6 +292,7 @@ function hasCapacity(room, capacity) {
   return true;
 }
 
+// Check if a room is on a floor
 function isOnFloor(room, floor) {
   if (floor !== "") {
     if (room.floorName === floor) {
@@ -299,29 +305,19 @@ function isOnFloor(room, floor) {
   }
 }
 
-function formatRoomFeatures(room) {
-  var featuresArray = [];
-  if (room.featureInstances !== undefined) {
-    featuresArray = room.featureInstances.map(instance => {
-      return instance.feature.name;
-    });
-  }
-  var features = "";
-  featuresArray.forEach(feature => {
-    features = features + feature + "  ・  ";
-  });
-  features = features.slice(0, features.length - 5);
-  if (features.length === 0) {
-    features = "-";
-  }
-
-  return features;
-}
-
 function rangeOf(arr) {
   return Math.max(...arr) - Math.min(...arr);
 }
 
+function vr(room, option) {
+  if (option) {
+    return room === "7.1" ? agent.add("<https://my.matterport.com/show/?m=fBscGfRt5in|Wanna see something cool?>") : "";
+  } else {
+    return `\n${room === "7.1" ? "<https://my.matterport.com/show/?m=fBscGfRt5in|Wanna see something cool?>" : ""}`;
+  }
+}
+
+// For filtering rooms based on availability times
 function emailFilter(status, date, dateTimeStart, busy, queryType) {
   var busyDate;
   var busyStartTime;
@@ -375,6 +371,27 @@ function emailFilter(status, date, dateTimeStart, busy, queryType) {
   }
 }
 
+// Make it pretty
+function formatRoomFeatures(room) {
+  var featuresArray = [];
+  if (room.featureInstances !== undefined) {
+    featuresArray = room.featureInstances.map(instance => {
+      return instance.feature.name;
+    });
+  }
+  var features = "";
+  featuresArray.forEach(feature => {
+    features = features + feature + "  ・  ";
+  });
+  features = features.slice(0, features.length - 5);
+  if (features.length === 0) {
+    features = "-";
+  }
+
+  return features;
+}
+
+// Make it pretty part 2
 function searchRoomsBlocks(rooms, calendars, date, dateTimeStart, queryType) {
   var blocks = [];
 
@@ -440,6 +457,7 @@ function searchRoomsBlocks(rooms, calendars, date, dateTimeStart, queryType) {
   return blocks;
 }
 
+// Make it pretty part 3
 function yesNoBlock(title, value1, value2) {
   const block = [
     {
@@ -471,23 +489,6 @@ function yesNoBlock(title, value1, value2) {
   return block;
 }
 
-// const viewMoreBlock = [
-//   {
-//     fallback: "Would you like me to show you more rooms?",
-//     title: "Would you like me to show you more rooms?",
-//     callback_id: "view_more_rooms",
-//     attachment_type: "default",
-//     actions: [{ name: "yes", text: "Yes", type: "button", value: "Yes" }]
-//   },
-//   {
-//     fallback: "Would you like me to show you more rooms?",
-//     title: "Would you like me to show you more rooms?",
-//     callback_id: "view_more_rooms",
-//     attachment_type: "default",
-//     actions: [{ name: "no", text: "No", type: "button", value: "No" }]
-//   }
-// ];
-
 exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, response) => {
   const agent = new WebhookClient({ request, response });
   console.log("Dialogflow Request headers: " + JSON.stringify(request.headers));
@@ -518,7 +519,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     const queryType = dt.queryType;
 
     if (isNaN(status)) {
-      status = 0;
+      status = 0; // Default all
     }
 
     return getRooms(OFFICE_ID)
@@ -596,7 +597,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                 const blocks = searchRoomsBlocks(filteredRooms, calendars, date, dateTimeStart, queryType);
 
                 if (filteredRooms.length < 6) {
-                  // Because Slack onbly supports up to 20 attachments...
+                  // Because Slack only supports up to 20 attachments...
                   payload.attachments[0].blocks = payload.attachments[0].blocks.concat(blocks);
                 } else {
                   payload.attachments[0].blocks = payload.attachments[0].blocks.concat(blocks.slice(0, 15));
@@ -713,9 +714,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                         new Date(Date.parse(events[0].start.dateTime))
                       )}!`
                     );
-                    if (roomInfo.resourceName === "7.1") {
-                      agent.add("<https://my.matterport.com/show/?m=fBscGfRt5in|Wanna see something cool?>");
-                    }
+                    vr(roomInfo.resourceName, 1);
                     // agent.add(new Suggestion(`Book ${roomInfo.userVisibleDescription}`));
                   } else {
                     const event = events[0];
@@ -742,7 +741,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                               type: "section",
                               text: {
                                 type: "mrkdwn",
-                                text: titleText
+                                text: titleText + vr(roomInfo.resourceName, 0)
                               }
                             },
                             { type: "divider" },
@@ -778,7 +777,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                             type: "section",
                             text: {
                               type: "mrkdwn",
-                              text: `It looks like ${roomInfo.userVisibleDescription} is booked at these times:`
+                              text: `It looks like ${roomInfo.userVisibleDescription} is booked at these times:` + vr(roomInfo.resourceName, 0)
                             }
                           },
                           { type: "divider" },
@@ -837,7 +836,9 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                             type: "section",
                             text: {
                               type: "mrkdwn",
-                              text: `It looks like ${roomInfo.userVisibleDescription} is free at ${timeToString(dateTimeStart)}!`
+                              text:
+                                `It looks like ${roomInfo.userVisibleDescription} is free at ${timeToString(dateTimeStart)}!` +
+                                vr(roomInfo.resourceName, 0)
                             }
                           }
                         ]
@@ -851,16 +852,10 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                   //     `No`
                   //   )
                   // );
-                  if (roomInfo.resourceName === "7.1") {
-                    payload.attachments[0].blocks[0].text.text =
-                      payload.attachments[0].blocks[0].text.text + "\n<https://my.matterport.com/show/?m=fBscGfRt5in|Wanna see something cool?>";
-                  }
                   agent.add(new Payload(agent.SLACK, payload));
                 } else {
                   agent.add(`There are currently no bookings for ${roomInfo.userVisibleDescription} on ${dateToString(new Date(Date.parse(date)))}.`);
-                  if (roomInfo.resourceName === "7.1") {
-                    agent.add("<https://my.matterport.com/show/?m=fBscGfRt5in|Wanna see something cool?>");
-                  }
+                  vr(roomInfo.resourceName, 1);
                   // agent.add(new Suggestion(`Book room ${roomInfo.resourceName}`));
                   // agent.add(new Suggestion("No"));
                 }
@@ -926,7 +921,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                     type: "section",
                     text: {
                       type: "mrkdwn",
-                      text: titleText
+                      text: titleText + vr(roomInfo.resourceName, 0)
                     }
                   }
                 ]
@@ -1008,7 +1003,9 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                     type: "section",
                     text: {
                       type: "mrkdwn",
-                      text: titleText
+                      text:
+                        titleText +
+                        `\n${roomInfo.resourceName === "7.1" ? "<https://my.matterport.com/show/?m=fBscGfRt5in|Wanna see something cool?>" : ""}`
                     }
                   },
                   {
@@ -1151,6 +1148,13 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     }
   }
 
+  function github(agent) {
+    if (agent.query.includes("version")) {
+      agent.add(`My version number is _${VERSION}_`.);
+    }
+    agent.add("Read more about me on my GitHub page: https://github.com/ralfmy/itv-roombot");
+  }
+
   function help(agent) {
     agent.add("Here are a few things you can ask me:");
     agent.add(new Suggestion("Find me available rooms"));
@@ -1199,6 +1203,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   intentMap.set(ROOM_OCCUPANCY_INTENT, roomOccupancy);
   intentMap.set(BOOK_ROOM_INTENT, bookRoom);
   intentMap.set(BOOK_ROOM_FOLLOWUP_INTENT, bookRoomFollowupYes);
+  intentMap.set(GITHUB_INTENT, github);
   intentMap.set(HELP_INTENT, help);
   intentMap.set(DOG_INTENT, dog);
   agent.handleRequest(intentMap);
