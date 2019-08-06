@@ -691,11 +691,19 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
 
           return calEventsList(roomInfo.resourceEmail, dateTimeStart.toISOString(), dateTimeEnd.toISOString())
             .then(res => {
-              var events = res.data.items
-                .filter(event => {
-                  return event.status === "confirmed";
+              var unique = [];
+              var events = [];
+              var data = res.data.items
+                .filter(item => {
+                  return item.status === "confirmed";
                 })
-                .sort(byTime);
+                .sort(byTime)
+                .forEach(item => {
+                  if (!unique.includes(item.summary)) {
+                    unique.push(item.summary);
+                    events.push(item);
+                  }
+                });
               console.log(events);
               if (events.length > 0) {
                 if (queryType) {
