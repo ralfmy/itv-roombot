@@ -523,28 +523,39 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                     }
                   ]
                 };
-                const blocks = searchRoomsListItems(filteredRooms, calendars, dateTimeStart, queryType);
 
-                if (filteredRooms.length < 6) {
-                  // Because Slack onbly supports up to 20 attachments...
-                  payload.attachments[0].blocks = payload.attachments[0].blocks.concat(blocks);
-                } else {
-                  payload.attachments[0].blocks = payload.attachments[0].blocks.concat(blocks.slice(0, 15));
-                  payload.attachments[0].blocks = payload.attachments[0].blocks.concat(
-                    yesNoBlock("Would you like me to show you more rooms?", "Yes", "No")
-                  );
-                  agent.context.set({
-                    name: "searchrooms-followup",
-                    lifespan: 10,
-                    parameters: {
-                      rooms: filteredRooms.slice(5),
-                      calendars: calendars,
-                      dateTimeStart: dateTimeStart,
-                      queryType: queryType
+                filteredRooms.forEach(room => {
+                  const calendarsSorted = calendars[room.resourceEmail];
+                  const name = room.userVisibleDescription;
+                  const floor = room.floorName;
+                  const section = room.floorSection;
+                  const capacity = room.capacity;
+                  const features = formatRoomFeatures(room);
+
+                  var status;
+                  if (calendarsSorted.length === 0) {
+                    if (queryType) {
+                      status = `Available at ${timeToString(new Date(dateTimeStart))}`;
+                    } else {
+                      status = `Available`;
                     }
-                  });
-                }
-                agent.add(new Payload(agent.SLACK, payload));
+                  } else {
+                    if (queryType) {
+                      if (dateTimeStart < new Date(Date.parse(calendarsSorted[0].start))) {
+                        status = `Available at ${timeToString(new Date(dateTimeStart))}`;
+                      } else {
+                        status = "Booked";
+                      }
+                    } else {
+                      if (dateTimeStart < new Date(Date.parse(calendarsSorted[0].start))) {
+                        status = `Available now`;
+                      } else {
+                        status = "Booked";
+                      }
+                    }
+                  }
+                  agent.add(`\n\n*${name}* ・ _${status}_\nCapacity: ${capacity}  \n${features}`);
+                });
               })
               .catch(err => {
                 console.log(err);
@@ -669,7 +680,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                     agent.add(
                       `・\n*${timeToString(new Date(Date.parse(event.start.dateTime)))} to ${timeToString(
                         new Date(Date.parse(event.end.dateTime))
-                      )}*\n${event.summary}\norganised by ${nameFromEmail(event.organizer.email)}`
+                      )}*\n_${event.summary}_\norganised by ${nameFromEmail(event.organizer.email)}`
                     );
                   });
                 }
@@ -894,7 +905,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
             agent.add(
               `*${resource.summary}* ・ ${dateToString(new Date(Date.parse(date)))} ・ ${timeToString(
                 new Date(Date.parse(resource.start.dateTime))
-              )} to ${timeToString(new Date(Date.parse(resource.end.dateTime)))}\n\n_${roomInfo.userVisibleDescription}_\norganised by ${
+              )} to ${timeToString(new Date(Date.parse(resource.end.dateTime)))}\n_${roomInfo.userVisibleDescription}_\norganised by ${
                 profile.displayName
               }\n\n`
             );
