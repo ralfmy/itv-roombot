@@ -5,7 +5,7 @@ const functions = require("firebase-functions");
 const { google } = require("googleapis");
 const { WebhookClient } = require("dialogflow-fulfillment");
 const { Text, Card, Payload, Suggestion } = require("dialogflow-fulfillment");
-
+const { BasicCard, List, Suggestions, Image, Permission, SignIn } = require("actions-on-google");
 const bigquery = require("@google-cloud/bigquery");
 const request = require("request-promise-native"); // For third-party HTTP requests
 
@@ -38,22 +38,23 @@ const BigQueryClient = new bigquery({ project_id: "roombot-oknmqj" });
 const SEARCH_ROOMS_INTENT = "Search Rooms";
 const SEARCH_ROOMS_FOLLOWUP_INTENT = "Search Rooms - yes";
 const ROOM_STATUS_INTENT = "Room Status";
+const ROOM_STATUS_FOLLOWUP_INTENT = "Room Status - yes";
 const ROOM_FEATURE_INTENT = "Room Feature";
 const ROOM_CAPACITY_INTENT = "Room Capacity";
 const ROOM_OCCUPANCY_INTENT = "Room Occupancy";
 const BOOK_ROOM_INTENT = "Book Room";
 const BOOK_ROOM_FOLLOWUP_INTENT = "Book Room - yes";
-const SET_OFFICE_INTENT = "Set Office";
+const BOOK_ROOM_PERMISSION_HELPER = "Book Room Permission";
 const HELP_INTENT = "Help";
 const DOG_INTENT = "Dog";
 
 /* APPLICATION CONSTANTS */
 const ERROR_MSG = "Oops! Looks like my developer messed up somewhere! Apologies on his behalf!";
-const INVALID_ROOM_MSG = "I'm sorry, but I can't seem to find that room.\n Could you please try again?";
+const INVALID_ROOM_MSG = "I'm sorry, but I can't seem to find that room.  \nCould you please try again?";
 
 const TIME_ZONE_OFFSET = "+01:00";
 
-var OFFICE;
+var OFFICE_ID = 0;
 
 const ICONS = {
   Phone: "https://img.icons8.com/color/48/000000/phone.png",
@@ -66,25 +67,35 @@ const ICONS = {
   busy: "https://img.icons8.com/color/48/000000/minus.png",
   cal_green: "https://img.icons8.com/color/48/000000/today.png",
   cal_red: "https://img.icons8.com/color/48/000000/leave.png",
-  cal_sched: "https://img.icons8.com/color/48/000000/overtime.png"
+  cal_sched: "https://img.icons8.com/color/48/000000/overtime.png",
+  cube: "https://img.icons8.com/color/48/000000/orthogonal-view.png"
+};
+
+const IMAGES = {
+  desk: "https://www.mayastepien.nl/googlecalendar/mayastepien_habits_code.jpg",
+  archery: "https://www.mayastepien.nl/googlecalendar/mayastepien-google-archery.jpg",
+  breakfast: "https://www.mayastepien.nl/googlecalendar/mayastepien-google-breakfast.jpg",
+  jumping: "https://www.mayastepien.nl/googlecalendar/mayastepien-google-jumping.jpg",
+  art: "https://www.mayastepien.nl/googlecalendar/mayastepien_habits_art.jpg"
 };
 
 const GREEN = "#00C853";
 const RED = "#F50057";
 
 /* API FUNCTIONS */
-function getRooms(office) {
-  // if (officeId) {
-  //   apiQuery = 'buildingId="London Waterhouse Square"';
-  // } else {
-  //   apiQuery = 'buildingId="London Gray\'s Inn Road"';
-  // }
+function getRooms(officeId) {
+  var apiQuery;
+  if (officeId) {
+    apiQuery = 'buildingId="London Waterhouse Square"';
+  } else {
+    apiQuery = 'buildingId="London Gray\'s Inn Road"';
+  }
   return new Promise((resolve, reject) => {
     admin.resources.calendars.list(
       {
         auth: serviceAccountAuth,
         customer: custId,
-        query: `buildingId=\"${office}\"`
+        query: apiQuery
       },
       (err, res) => {
         if (err) {
@@ -127,7 +138,7 @@ function calFreebusy(timeMin, timeMax, emails) {
 
 // List the events of a certain calendar resource
 function calEventsList(calendarId, timeMin, timeMax) {
-  const today = new Date().toISOString().split("T")[0] + "T00:00:00" + TIME_ZONE_OFFSET;
+  var today = new Date().toISOString().split("T")[0] + "T00:00:00" + TIME_ZONE_OFFSET;
   return new Promise((resolve, reject) => {
     calendar.events.list(
       {
@@ -152,32 +163,12 @@ function calEventsList(calendarId, timeMin, timeMax) {
 // Insert a new calendar event
 function calEventsInsert(calendarId, resource) {
   return new Promise((resolve, reject) => {
-    calendar.events.insert(
-      {
-        auth: serviceAccountAuth,
-        calendarId: calendarId,
-        resource: resource
-      },
-      (err, res) => {
-        if (err) {
-          console.log(err);
-          reject(err);
-        } else {
-          console.log("EVENT CREATED");
-          resolve(res);
-        }
-      }
-    );
-  });
-}
-
-function slackGetUserProfile() {
-  return new Promise((resolve, reject) => {
-    request.get(`https://slack.com/api/users.profile.get?token=${process.env.SLACK_OAUTH_TOKEN}&pretty=1`, (err, res) => {
+    calendar.events.insert({ auth: serviceAccountAuth, calendarId: calendarId, resource: resource }, (err, res) => {
       if (err) {
         console.log(err);
         reject(err);
       } else {
+        console.log("EVENT CREATED");
         resolve(res);
       }
     });
@@ -380,8 +371,8 @@ function rangeOf(arr) {
   return Math.max(...arr) - Math.min(...arr);
 }
 
-function searchRoomsBlocks(rooms, calendars, dateTimeStart, queryType) {
-  var blocks = [];
+function searchRoomsListItems(rooms, calendars, dateTimeStart, queryType) {
+  var items = {};
 
   rooms.forEach(room => {
     const calendarsSorted = calendars[room.resourceEmail];
@@ -394,110 +385,32 @@ function searchRoomsBlocks(rooms, calendars, dateTimeStart, queryType) {
     var status;
     if (calendarsSorted.length === 0) {
       if (queryType) {
-        status = `_Available at ${timeToString(new Date(dateTimeStart))}_`;
+        status = `Available at ${timeToString(new Date(dateTimeStart))}`;
       } else {
-        status = `_Available_`;
+        status = `Available`;
       }
     } else {
       if (queryType) {
         if (dateTimeStart < new Date(Date.parse(calendarsSorted[0].start))) {
-          status = `_Available at ${timeToString(new Date(dateTimeStart))}_\n_Booked at_`;
+          status = `Available at ${timeToString(new Date(dateTimeStart))}`;
         } else {
-          status = "_Booked until_";
+          status = "Booked";
         }
       } else {
         if (dateTimeStart < new Date(Date.parse(calendarsSorted[0].start))) {
-          status = `_Available now_\n_Booked at_`;
+          status = `Available now`;
         } else {
-          status = "_Booked at_";
+          status = "Booked";
         }
       }
     }
 
-    const block = [
-      {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `*${name}*\n${status}`
-        }
-      },
-      {
-        type: "context",
-        elements: [
-          {
-            type: "mrkdwn",
-            text: `Capacity: ${capacity}\n${features}`
-          }
-        ]
-      },
-      { type: "divider" }
-    ];
-
-    if (queryType) {
-      calendarsSorted.forEach(event => {
-        block[0].text.text = block[0].text.text + `\n*${timeToString(new Date(Date.parse(event.end)))}*`;
-      });
-    } else {
-      calendarsSorted.forEach(event => {
-        block[0].text.text =
-          block[0].text.text + `\n*${timeToString(new Date(Date.parse(event.start)))} to ${timeToString(new Date(Date.parse(event.end)))}*`;
-      });
-    }
-
-    blocks = blocks.concat(block);
+    const item = { title: `${name} ・ ${status}`, description: `Capacity: ${capacity}  \n${features}` };
+    items[`${room.resourceName}`] = item;
   });
 
-  return blocks;
+  return items;
 }
-
-function yesNoBlock(title, value1, value2) {
-  const block = [
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: `*${title}*` },
-      accessory: {
-        type: "button",
-        text: {
-          type: "plain_text",
-          text: "Yes"
-        },
-        value: value1
-      }
-    },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: " " },
-      accessory: {
-        type: "button",
-        text: {
-          type: "plain_text",
-          text: "No"
-        },
-        value: value2
-      }
-    }
-  ];
-
-  return block;
-}
-
-// const viewMoreBlock = [
-//   {
-//     fallback: "Would you like me to show you more rooms?",
-//     title: "Would you like me to show you more rooms?",
-//     callback_id: "view_more_rooms",
-//     attachment_type: "default",
-//     actions: [{ name: "yes", text: "Yes", type: "button", value: "Yes" }]
-//   },
-//   {
-//     fallback: "Would you like me to show you more rooms?",
-//     title: "Would you like me to show you more rooms?",
-//     callback_id: "view_more_rooms",
-//     attachment_type: "default",
-//     actions: [{ name: "no", text: "No", type: "button", value: "No" }]
-//   }
-// ];
 
 exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, response) => {
   const agent = new WebhookClient({ request, response });
@@ -506,7 +419,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
 
   function welcome(agent) {
     agent.add(`Hello! I'm Gray's Inn Road's meeting room assistant.\nHow can I help?`);
-    agent.add(new Suggestion(`What can you do?`));
+    // agent.add(new Suggestion(`What can you do?`));
   }
 
   function fallback(agent) {
@@ -532,7 +445,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
       status = 0;
     }
 
-    return getRooms(OFFICE)
+    return getRooms(OFFICE_ID)
       .then(rooms => {
         var allRooms = rooms.data.items;
         var allEmails = allRooms.map(room => {
@@ -589,6 +502,8 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                     return true;
                 }
 
+                agent.add(titleText);
+
                 var payload = {
                   attachments: [
                     {
@@ -608,7 +523,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                     }
                   ]
                 };
-                const blocks = searchRoomsBlocks(filteredRooms, calendars, dateTimeStart, queryType);
+                const blocks = searchRoomsListItems(filteredRooms, calendars, dateTimeStart, queryType);
 
                 if (filteredRooms.length < 6) {
                   // Because Slack onbly supports up to 20 attachments...
@@ -618,7 +533,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                   payload.attachments[0].blocks = payload.attachments[0].blocks.concat(
                     yesNoBlock("Would you like me to show you more rooms?", "Yes", "No")
                   );
-                  agent.setContext({
+                  agent.context.set({
                     name: "searchrooms-followup",
                     lifespan: 10,
                     parameters: {
@@ -649,7 +564,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   }
 
   function searchRoomsFollowupYes(agent) {
-    const context = agent.getContext("searchrooms-followup");
+    const context = agent.context.get("searchrooms-followup");
     const calendars = context.parameters.calendars;
     const dateTimeStart = context.parameters.dateTimeStart;
     const queryType = context.parameters.queryType;
@@ -672,14 +587,14 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
 
     if (filteredRooms.length < 5) {
       payload.attachments[0].blocks = payload.attachments[0].blocks.concat(blocks);
-      agent.setContext({
+      agent.context.set({
         name: "searchrooms-followup",
         lifespan: 0
       });
     } else {
       payload.attachments[0].blocks = payload.attachments[0].blocks.concat(blocks.slice(0, 15));
       payload.attachments[0].blocks = payload.attachments[0].blocks.concat(yesNoBlock("Would you like me to show you more rooms?", "Yes", "No"));
-      agent.setContext({
+      agent.context.set({
         name: "searchrooms-followup",
         parameters: {
           rooms: filteredRooms.slice(5),
@@ -707,10 +622,10 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     if (!room) {
       agent.add(INVALID_ROOM_MSG);
     } else {
-      return getRooms(OFFICE)
+      return getRooms(OFFICE_ID)
         .then(rooms => {
           var roomInfo = rooms.data.items.filter(item => {
-            return item.resourceName === room;
+            return item.resourceName == room;
           })[0];
 
           return calEventsList(roomInfo.resourceEmail, dateTimeStart.toISOString(), dateTimeEnd.toISOString())
@@ -725,11 +640,11 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                 if (queryType) {
                   if (dateTimeStart.getHours() < new Date(Date.parse(events[0].start.dateTime)).getHours()) {
                     agent.add(
-                      `It looks like ${roomInfo.userVisibleDescription} is free until ${timeToString(
+                      `It looks like *${roomInfo.userVisibleDescription}* is free until ${timeToString(
                         new Date(Date.parse(events[0].start.dateTime))
                       )}!`
                     );
-                    agent.add(new Suggestion(`Book ${roomInfo.userVisibleDescription}`));
+                    // agent.add(new Suggestion(`Book ${roomInfo.userVisibleDescription}`));
                   } else {
                     const event = events[0];
                     var timeText;
@@ -737,153 +652,37 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
 
                     if (agent.query.includes("now")) {
                       timeText = `until ${timeToString(new Date(Date.parse(event.end.dateTime)))}`;
-                      titleText = `The meeting _${event.summary}_ is in progress in ${
+                      titleText = `The meeting _${event.summary}_ is in progress in *${
                         roomInfo.userVisibleDescription
-                      } ${timeText}, booked by ${nameFromEmail(event.organizer.email)}.`;
+                      }* ${timeText}, booked by ${nameFromEmail(event.organizer.email)}.`;
                     } else {
                       timeText = `${timeToString(new Date(Date.parse(event.start.dateTime)))} to ${timeToString(
                         new Date(Date.parse(event.end.dateTime))
                       )}`;
-                      titleText = `${roomInfo.userVisibleDescription} has been booked from ${timeText} by ${nameFromEmail(event.organizer.email)}`;
+                      titleText = `*${roomInfo.userVisibleDescription}* has been booked from ${timeText} by ${nameFromEmail(event.organizer.email)}`;
                     }
-                    var payload = {
-                      attachments: [
-                        {
-                          color: RED,
-                          fallback: titleText,
-                          blocks: [
-                            {
-                              type: "section",
-                              text: {
-                                type: "mrkdwn",
-                                text: titleText
-                              }
-                            },
-                            {
-                              type: "divider"
-                            },
-                            {
-                              type: "section",
-                              text: {
-                                type: "mrkdwn",
-                                text: `*${event.summary}* ・ ${timeText}`
-                              }
-                            },
-                            {
-                              type: "context",
-                              elements: [
-                                {
-                                  type: "mrkdwn",
-                                  text: `organised by ${nameFromEmail(event.organizer.email)}`
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    };
-                    agent.add(new Payload(agent.SLACK, payload));
+                    agent.add(titleText);
                   }
                 } else {
-                  var payload = {
-                    attachments: [
-                      {
-                        fallback: `It looks like ${roomInfo.userVisibleDescription} is booked at these times:`,
-                        blocks: [
-                          {
-                            type: "section",
-                            text: {
-                              type: "mrkdwn",
-                              text: `It looks like ${roomInfo.userVisibleDescription} is booked at these times:`
-                            }
-                          },
-                          {
-                            type: "divider"
-                          },
-                          {
-                            type: "section",
-                            text: {
-                              type: "mrkdwn",
-                              text: `*${roomInfo.userVisibleDescription}* ・ ${dateToString(new Date(Date.parse(date)))}\n_Bookings_`
-                            }
-                          }
-                        ]
-                      }
-                    ]
-                  };
+                  agent.add(`It looks like *${roomInfo.userVisibleDescription}* is booked at these times:`);
                   events.forEach(event => {
-                    const block = [
-                      {
-                        type: "section",
-                        text: {
-                          type: "mrkdwn",
-                          text: `*${timeToString(new Date(Date.parse(event.start.dateTime)))} to ${timeToString(
-                            new Date(Date.parse(event.end.dateTime))
-                          )}*`
-                        }
-                      },
-                      {
-                        type: "context",
-                        elements: [
-                          {
-                            type: "mrkdwn",
-                            text: `*${event.summary}*\norganised by ${nameFromEmail(event.organizer.email)}`
-                          }
-                        ]
-                      },
-                      {
-                        type: "section",
-                        text: {
-                          type: "plain_text",
-                          text: " "
-                        }
-                      }
-                    ];
-                    payload.attachments[0].blocks = payload.attachments[0].blocks.concat(block);
+                    agent.add(
+                      `・\n*${timeToString(new Date(Date.parse(event.start.dateTime)))} to ${timeToString(
+                        new Date(Date.parse(event.end.dateTime))
+                      )}*\n${event.summary}\norganised by ${nameFromEmail(event.organizer.email)}`
+                    );
                   });
-                  agent.add(new Payload(agent.SLACK, payload));
                 }
               } else {
                 if (queryType) {
-                  var payload = {
-                    attachments: [
-                      {
-                        color: GREEN,
-                        fallback: `It looks like ${roomInfo.userVisibleDescription} is free at ${timeToString(dateTimeStart)}!`,
-                        blocks: [
-                          {
-                            type: "section",
-                            text: {
-                              type: "mrkdwn",
-                              text: `It looks like ${roomInfo.userVisibleDescription} is free at ${timeToString(dateTimeStart)}!`
-                            }
-                          }
-                        ]
-                      }
-                    ]
-                  };
-                  payload.attachments[0].blocks = payload.attachments[0].blocks.concat(
-                    yesNoBlock(
-                      `Would you like to book ${roomInfo.userVisibleDescription} at ${timeToString(dateTimeStart)}?`,
-                      `Book room ${roomInfo.resourceName} on ${dateToString(new Date(Date.parse(date)))} at ${timeToString(dateTimeStart)}`,
-                      `No`
-                    )
-                  );
-                  agent.add(new Payload(agent.SLACK, payload));
+                  agent.add(`It looks like *${roomInfo.userVisibleDescription}* is free at ${timeToString(dateTimeStart)}!`);
                 } else {
                   agent.add(
-                    `There are currently no bookings for ${roomInfo.userVisibleDescription} on ${dateToString(
-                      new Date(Date.parse(date))
-                    )}.\nWould you like to book this room?`
+                    `There are currently no bookings for *${roomInfo.userVisibleDescription}* on ${dateToString(new Date(Date.parse(date)))}.`
                   );
-                  agent.add(new Suggestion(`Book room ${roomInfo.resourceName}`));
-                  agent.add(new Suggestion("No"));
                 }
-                // agent.add(new Suggestion("Does it have a phone?"));
-                // agent.add(new Suggestion("Does it have a TV?"));
-                // agent.add(new Suggestion("How many people can it fit?"));
               }
-              agent.setContext({
+              agent.context.set({
                 name: "roomstatus-followup",
                 lifespan: 7,
                 parameters: {
@@ -906,7 +705,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   }
 
   function roomFeature(agent) {
-    const context = agent.getContext("roomstatus-followup");
+    const context = agent.context.get("roomstatus-followup");
     const features = agent.parameters.feature;
     var room = agent.parameters.room;
 
@@ -918,7 +717,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     if (!room) {
       agent.add(INVALID_ROOM_MSG);
     } else {
-      return getRooms(OFFICE)
+      return getRooms(OFFICE_ID)
         .then(rooms => {
           var roomInfo = rooms.data.items.filter(item => {
             return item.resourceName == room;
@@ -936,58 +735,15 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
             titleText = `No, *${roomInfo.userVisibleDescription}* only has the following:`;
           }
 
-          var payload = {
-            attachments: [
-              {
-                blocks: [
-                  {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: titleText
-                    }
-                  }
-                ]
-              }
-            ]
-          };
+          agent.add(titleText);
 
           if (roomInfo.featureInstances !== undefined) {
             roomInfo.featureInstances.forEach(instance => {
-              const block = [
-                {
-                  type: "context",
-                  elements: [
-                    {
-                      type: "image",
-                      image_url: ICONS[instance.feature.name],
-                      alt_text: "icon"
-                    },
-                    {
-                      type: "mrkdwn",
-                      text: `*${instance.feature.name}*`
-                    }
-                  ]
-                }
-              ];
-              payload.attachments[0].blocks = payload.attachments[0].blocks.concat(block);
+              agent.add(`・ ${instance.feature.name}`);
             });
           } else {
-            const block = [
-              {
-                type: "context",
-                elements: [
-                  {
-                    type: "plain_text",
-                    text: "None"
-                  }
-                ]
-              }
-            ];
-            payload.attachments[0].blocks = payload.attachments[0].blocks.concat(block);
+            agent.add("None");
           }
-
-          agent.add(new Payload(agent.SLACK, payload));
         })
         .catch(err => {
           console.log(err);
@@ -996,7 +752,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   }
 
   function roomCapacity(agent) {
-    const context = agent.getContext("roomstatus-followup");
+    const context = agent.context.get("roomstatus-followup");
     const number = agent.parameters.number;
     var room = agent.parameters.room;
 
@@ -1007,7 +763,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     if (!room) {
       agent.add(INVALID_ROOM_MSG);
     } else {
-      return getRooms(OFFICE)
+      return getRooms(OFFICE_ID)
         .then(rooms => {
           var roomInfo = rooms.data.items.filter(item => {
             return item.resourceName == room;
@@ -1015,45 +771,15 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
 
           var titleText;
           if (number === "") {
-            titleText = `*${roomInfo.userVisibleDescription}* can seat ${roomInfo.capacity} people.`;
+            titleText = `*${roomInfo.userVisibleDescription}* can seat *${roomInfo.capacity}* people.`;
           } else {
             if (hasCapacity(roomInfo, number)) {
-              titleText = `Yep, it looks like you can just about squeeze ${number} people into *${roomInfo.userVisibleDescription}*.`;
+              titleText = `Yep, it looks like you can just about squeeze *${number}* people into *${roomInfo.userVisibleDescription}*.`;
             } else {
-              titleText = `Sorry, but *${roomInfo.userVisibleDescription}* can only seat ${roomInfo.capacity} people.`;
+              titleText = `Sorry, but *${roomInfo.userVisibleDescription}* can only seat *${roomInfo.capacity}* people.`;
             }
           }
-          var payload = {
-            attachments: [
-              {
-                blocks: [
-                  {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: titleText
-                    }
-                  },
-                  {
-                    type: "context",
-                    elements: [
-                      {
-                        type: "image",
-                        image_url: ICONS.conference,
-                        alt_text: "icon"
-                      },
-                      {
-                        type: "mrkdwn",
-                        text: `*${roomInfo.capacity}*`
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
-          };
-
-          agent.add(new Payload(agent.SLACK, payload));
+          agent.add(titleText);
         })
         .catch(err => {
           console.log(err);
@@ -1063,7 +789,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   }
 
   function bookRoom(agent) {
-    const context = agent.getContext("roomstatus-followup");
+    const context = agent.context.get("roomstatus-followup");
     var room = agent.parameters.room;
     var date = agent.parameters.date;
     const time = agent.parameters.time;
@@ -1087,21 +813,10 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
       agent.add("Which room would you like to book?");
     } else if (date === "") {
       agent.add("On which day?");
-      agent.add(new Suggestion("Today"));
-      agent.add(new Suggestion("Tomorrow"));
     } else if (!time) {
       agent.add("What time would you like to book this room for?");
-      agent.add(new Suggestion("11am"));
-      agent.add(new Suggestion("12pm"));
-      agent.add(new Suggestion("2pm"));
-      agent.add(new Suggestion("3pm"));
-      agent.add(new Suggestion("4pm"));
     } else if (time && !duration) {
       agent.add("And for how long?");
-      agent.add(new Suggestion("30 minutes"));
-      agent.add(new Suggestion("45 minutes"));
-      agent.add(new Suggestion("1 hour"));
-      agent.add(new Suggestion("1.5 hours"));
     } else if (!title) {
       agent.add('What would you like to call this meeting?\nPlease surround the name in quotation marks, like "Meeting Name"');
     }
@@ -1126,7 +841,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
         description: "booked by ITV Roombot",
         colorId: "3" // purple
       };
-      return getRooms(OFFICE).then(rooms => {
+      return getRooms(OFFICE_ID).then(rooms => {
         var roomInfo = rooms.data.items.filter(item => {
           return item.resourceName == room;
         });
@@ -1136,141 +851,74 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
         } else {
           roomInfo = roomInfo[0];
         }
-
-        return slackGetUserProfile()
-          .then(res => {
-            const profile = JSON.parse(res.body).profile;
-            resource.creator.email = profile.email;
-            resource.organizer.email = profile.email;
-            resource.attendees.push({
-              email: profile.email,
-              organizer: true,
-              responseStatus: "accepted"
-            });
-            resource.attendees.push({
-              email: roomInfo.resourceEmail,
-              displayName: roomInfo.generatedResourceName,
-              self: true,
-              resource: true,
-              responseStatus: "accepted"
-            });
-            resource.location = roomInfo.generatedResourceName;
-            resource.start.dateTime = new Date(Date.parse(date.split("T")[0] + "T" + time.split("T")[1])).toISOString();
-            var timeAdjusted;
-            switch (duration.unit) {
-              case "min":
-                timeAdjusted = new Date(new Date(time).setMinutes(new Date(time).getMinutes() + duration.amount));
-                resource.end.dateTime = new Date(Date.parse(date.split("T")[0] + "T" + timeAdjusted.toISOString().split("T")[1])).toISOString();
-                break;
-              case "h":
-                timeAdjusted = new Date(new Date(time).setHours(new Date(time).getHours() + duration.amount));
-                resource.end.dateTime = new Date(Date.parse(date.split("T")[0] + "T" + timeAdjusted.toISOString().split("T")[1])).toISOString();
-                break;
-              default:
-                break;
-            }
-            console.log(resource);
-            return calFreebusy(resource.start.dateTime, resource.end.dateTime, [
-              {
-                id: roomInfo.resourceEmail
-              }
-            ]).then(bookings => {
-              if (bookings.data.calendars[roomInfo.resourceEmail].busy.length > 0) {
-                agent.add(`Sorry! Looks like someone has already booked ${roomInfo.userVisibleDescription}.`);
-                agent.add(new Suggestion(`Who booked ${roomInfo.resourceName} at ${timeToString(new Date(Date.parse(resource.start.dateTime)))}?`));
-              } else {
-                var payload = {
-                  attachments: [
-                    {
-                      fallback: "Event created",
-                      blocks: [
-                        {
-                          type: "section",
-                          text: {
-                            type: "mrkdwn",
-                            text: `Here's a summary of your booking:`
-                          }
-                        },
-                        {
-                          type: "divider"
-                        },
-                        {
-                          type: "section",
-                          text: {
-                            type: "mrkdwn",
-                            text: `*${resource.summary}* ・ ${dateToString(new Date(Date.parse(date)))}\n${timeToString(
-                              new Date(Date.parse(resource.start.dateTime))
-                            )} to ${timeToString(new Date(Date.parse(resource.end.dateTime)))}`
-                          }
-                        },
-                        {
-                          type: "context",
-                          elements: [
-                            {
-                              type: "mrkdwn",
-                              text: `*${roomInfo.userVisibleDescription}*\norganised by ${nameFromEmail(resource.organizer.email)}`
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                };
-                payload.attachments[0].blocks = payload.attachments[0].blocks.concat(
-                  yesNoBlock("Would you like to confirm the booking?", "Yes", "No")
-                );
-                agent.setContext({
-                  name: "bookroom-followup",
-                  lifespan: 1,
-                  parameters: {
-                    resource: resource
-                  }
-                });
-                agent.add(new Payload(agent.SLACK, payload));
+        const profile = request.body.originalDetectIntentRequest.payload.event.user;
+        resource.creator.email = profile.email;
+        resource.organizer.email = profile.email;
+        resource.attendees.push({
+          email: profile.email,
+          organizer: true,
+          responseStatus: "accepted"
+        });
+        resource.attendees.push({
+          email: roomInfo.resourceEmail,
+          displayName: roomInfo.generatedResourceName,
+          self: true,
+          resource: true,
+          responseStatus: "accepted"
+        });
+        resource.location = roomInfo.generatedResourceName;
+        resource.start.dateTime = new Date(Date.parse(date.split("T")[0] + "T" + time.split("T")[1])).toISOString();
+        var timeAdjusted;
+        switch (duration.unit) {
+          case "min":
+            timeAdjusted = new Date(new Date(time).setMinutes(new Date(time).getMinutes() + duration.amount));
+            resource.end.dateTime = new Date(Date.parse(date.split("T")[0] + "T" + timeAdjusted.toISOString().split("T")[1])).toISOString();
+            break;
+          case "h":
+            timeAdjusted = new Date(new Date(time).setHours(new Date(time).getHours() + duration.amount));
+            resource.end.dateTime = new Date(Date.parse(date.split("T")[0] + "T" + timeAdjusted.toISOString().split("T")[1])).toISOString();
+            break;
+          default:
+            break;
+        }
+        console.log(resource);
+        return calFreebusy(resource.start.dateTime, resource.end.dateTime, [
+          {
+            id: roomInfo.resourceEmail
+          }
+        ]).then(bookings => {
+          if (bookings.data.calendars[roomInfo.resourceEmail].busy.length > 0) {
+            agent.add(`Sorry! Looks like someone has already booked ${roomInfo.userVisibleDescription}.`);
+          } else {
+            agent.add("Here's a summary of your booking:\n\n");
+            agent.add(
+              `*${resource.summary}* ・ ${dateToString(new Date(Date.parse(date)))} ・ ${timeToString(
+                new Date(Date.parse(resource.start.dateTime))
+              )} to ${timeToString(new Date(Date.parse(resource.end.dateTime)))}\n\n_${roomInfo.userVisibleDescription}_\norganised by ${
+                profile.displayName
+              }\n\n`
+            );
+            agent.add("Would you like to confirm the booking?");
+            agent.context.set({
+              name: "bookroom-followup",
+              lifespan: 1,
+              parameters: {
+                resource: resource
               }
             });
-          })
-          .catch(err => {
-            console.log(err);
-          });
+          }
+        });
       });
     }
   }
 
   function bookRoomFollowupYes(agent) {
-    const context = agent.getContext("bookroom-followup");
+    const context = agent.context.get("bookroom-followup");
     console.log(context);
     const resource = context.parameters.resource;
     return calEventsInsert(adminId, resource)
       .then(() => {
-        const payload = {
-          attachments: [
-            {
-              color: GREEN,
-              fallback: "Done! Your meeting has been booked!",
-              blocks: [
-                {
-                  type: "divider"
-                },
-                {
-                  type: "context",
-                  elements: [
-                    {
-                      type: "image",
-                      image_url: ICONS.cal_green,
-                      alt_text: "icon"
-                    },
-                    {
-                      type: "mrkdwn",
-                      text: `*Done! Your meeting has been booked!*`
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        };
-        agent.add(new Payload(agent.SLACK, payload));
+        agent.add("Done! Your meeting has been booked!");
       })
       .catch(err => {
         console.log(err);
@@ -1278,7 +926,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   }
 
   function roomOccupancy(agent) {
-    const context = agent.getContext("roomstatus-followup");
+    const context = agent.context.get("roomstatus-followup");
     var room = agent.parameters.room;
     var time = agent.parameters.time.split("T")[1];
     var date;
@@ -1303,7 +951,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     if (room === "") {
       agent.add(INVALID_ROOM_MSG);
     } else {
-      return getRooms(OFFICE)
+      return getRooms(OFFICE_ID)
         .then(rooms => {
           var roomInfo = rooms.data.items.filter(item => {
             return item.resourceName === room;
@@ -1370,31 +1018,16 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     }
   }
 
-  function setOffice(agent) {
-    const office = agent.parameters.office;
-    console.log(office);
-    if (!office) {
-      agent.add("What is the building name?");
-    } else {
-      OFFICE = agent.parameters.office;
-      agent.add(`Office has been set to ${OFFICE}.`);
-    }
-  }
-
   function help(agent) {
-    agent.add("Here are a few things you can ask me:");
-    agent.add(new Suggestion("Find me available rooms"));
-    agent.add(new Suggestion("Will 2.3 be free from 4-5pm?"));
-    agent.add(new Suggestion("Is 7.7 available tomorrow?"));
-    agent.add(new Suggestion("Who booked 4.4 today?"));
-    // agent.add(new Suggestion("Does room 5.1 have Hangouts?"));
-    // agent.add(new Suggestion("Is there someone in 2.1?"));
-    agent.add(new Suggestion("Woof"));
-    agent.add("If you would like to set your office, just tell me the building name at any time.");
+    agent.add("*Here are a few things you can ask me:*\n");
+    agent.add("Find me available rooms");
+    agent.add("Will 2.3 be free from 4-5pm?");
+    agent.add("Is 7.7 available tomorrow?");
+    agent.add("Who booked 4.4 today?");
   }
 
   function dog(agent) {
-    const context = agent.getContext("bookroom-dog");
+    const context = agent.context.get("bookroom-dog");
     var message = "Woof";
     console.log(context);
     if (context) {
@@ -1430,7 +1063,6 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   intentMap.set(ROOM_OCCUPANCY_INTENT, roomOccupancy);
   intentMap.set(BOOK_ROOM_INTENT, bookRoom);
   intentMap.set(BOOK_ROOM_FOLLOWUP_INTENT, bookRoomFollowupYes);
-  intentMap.set(SET_OFFICE_INTENT, setOffice);
   intentMap.set(HELP_INTENT, help);
   intentMap.set(DOG_INTENT, dog);
   agent.handleRequest(intentMap);
