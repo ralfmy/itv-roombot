@@ -1,5 +1,6 @@
 "use strict";
 const VERSION = "1.0";
+const RELEASE_DATE = "09/08/2019";
 
 /* REQUIREMENTS */
 const functions = require("firebase-functions");
@@ -1150,7 +1151,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
 
   function github(agent) {
     if (agent.query.includes("version")) {
-      agent.add(`My version number is _${VERSION}_`.);
+      agent.add(`My version number is _${VERSION}_ released on _${RELEASE_DATE}_`);
     }
     agent.add("Read more about me on my GitHub page: https://github.com/ralfmy/itv-roombot");
   }
