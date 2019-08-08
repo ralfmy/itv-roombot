@@ -30,7 +30,7 @@ const serviceAccountAuth = new google.auth.JWT(
 /* BIGQUERY CLIENT */
 const BigQueryClient = new bigquery({ project_id: "roombot-oknmqj" });
 
-/* INTENT CONSTANTS */
+/* INTENTs */
 const SEARCH_ROOMS_INTENT = "Search Rooms";
 const SEARCH_ROOMS_FOLLOWUP_INTENT = "Search Rooms - yes";
 const ROOM_STATUS_INTENT = "Room Status";
@@ -197,10 +197,11 @@ function dateTimeInterpreter(date, time, timePeriod) {
   var dateTimeEnd;
   var queryType = 1; // 0: general; 1: specific
 
+  const todate = new Date();
+
   if (date === "") {
     // If no date is supplied, assume today's date
-    date = new Date();
-    date = date.toISOString().split("T")[0];
+    date = todate.toISOString().split("T")[0];
   }
 
   if (timePeriod === "" && time) {
@@ -209,7 +210,20 @@ function dateTimeInterpreter(date, time, timePeriod) {
     dateTimeEnd = new Date(date + "T23:59:59" + TIME_ZONE_OFFSET);
   } else if (timePeriod === "" && !time) {
     // "...today"; "...tomorrow"; "...later"
-    dateTimeStart = new Date(date + "T00:00:00" + TIME_ZONE_OFFSET);
+    if (date > todate.toISOString().split("T")[0]) {
+      dateTimeStart = new Date(date + "T01:00:00" + TIME_ZONE_OFFSET);
+    } else {
+      dateTimeStart = new Date(
+        date +
+          "T" +
+          `${todate.getHours() + parseInt(TIME_ZONE_OFFSET[2])}`.padStart(2, "0") +
+          ":" +
+          `${todate.getMinutes()}`.padStart(2, "0") +
+          ":" +
+          `${todate.getSeconds()}`.padStart(2, "0") +
+          TIME_ZONE_OFFSET
+      );
+    }
     dateTimeEnd = new Date(date + "T23:59:59" + TIME_ZONE_OFFSET);
     queryType = 0;
   } else {
@@ -228,7 +242,7 @@ function nameFromEmail(email) {
   var first = name.split(".")[0];
   var last = name.split(".")[1];
   first = first[0].toUpperCase() + first.slice(1);
-  last = last[0].toUpperCase() + last.slice(1);
+  last = last ? last[0].toUpperCase() + last.slice(1) : "";
   return first + " " + last;
 }
 
@@ -250,15 +264,20 @@ function formatDate(dateTimeString) {
   });
 }
 
+// Sort a list of events by time
 function byTime(a, b) {
-  const aTime = formatTime(a.start.dateTime);
+  const aTime = formatTime(a.start.dateTime); // Format to same time zone
   const bTime = formatTime(b.start.dateTime);
+
+  // Get hours
   if (parseInt(aTime.split(":")[0]) < parseInt(bTime.split(":")[0])) {
     return -1;
   }
   if (parseInt(aTime.split(":")[0]) > parseInt(bTime.split(":")[0])) {
     return 1;
   }
+
+  // If same hour, get minutes
   if (parseInt(aTime.split(":")[1]) < parseInt(bTime.split(":")[1])) {
     return -1;
   }
@@ -313,6 +332,7 @@ function isOnFloor(room, floor) {
   }
 }
 
+// Get the range of an array of numbers
 function rangeOf(arr) {
   return Math.max(...arr) - Math.min(...arr);
 }
@@ -326,9 +346,7 @@ function vr(room, option) {
 }
 
 // For filtering rooms based on availability times
-function emailFilter(status, date, dateTimeStart, busy, queryType) {
-  var busyDate;
-  var busyStartTime;
+function emailFilter(status, dateTimeStart, busy) {
   switch (status) {
     case 0:
       return true;
@@ -336,39 +354,19 @@ function emailFilter(status, date, dateTimeStart, busy, queryType) {
       if (busy.length === 0) {
         return true;
       } else {
-        if (queryType) {
-          busyDate = formatDate(date);
-          busyStartTime = new Date(busy[0].start);
-          if (dateTimeStart.getHours() < busyStartTime.getHours()) {
-            return true;
-          } else {
-            return false;
-          }
+        if (new Date(dateTimeStart).getHours() < new Date(busy[0].start).getHours()) {
+          return true;
         } else {
-          if (date < busyStartTime) {
-            return true;
-          } else {
-            return false;
-          }
+          return false;
         }
       }
       break;
     case 2:
       if (busy.length > 0) {
-        if (queryType) {
-          busyDate = formatDate(date);
-          busyStartTime = new Date(busy[0].start);
-          if (dateTimeStart.getHours() < busyStartTime.getHours()) {
-            return false;
-          } else {
-            return true;
-          }
+        if (new Date(dateTimeStart).getHours() < new Date(busy[0].start).getHours()) {
+          return false;
         } else {
-          if (date < busyStartTime) {
-            return false;
-          } else {
-            return true;
-          }
+          return true;
         }
       } else {
         return false;
@@ -511,7 +509,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   }
 
   function searchRooms(agent) {
-    var status = parseInt(agent.parameters["room-status"]);
+    var status = parseInt(agent.parameters["room-status"]); // 0: all; 1: free; 2: busy
     var date = agent.parameters.date.split("T")[0];
     var time = agent.parameters.time.split("T")[1];
     var timePeriod = agent.parameters["time-period"];
@@ -526,7 +524,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     const queryType = dt.queryType;
 
     if (isNaN(status)) {
-      status = 0; // Default all
+      status = 0; // Default all rooms
     }
 
     return getRooms(OFFICE_ID)
@@ -536,11 +534,10 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
           return { id: room.resourceEmail };
         });
         var calendars = {};
-
         return calFreebusy(dateTimeStart.toISOString(), dateTimeEnd.toISOString(), allEmails.slice(0, 25)) // Have to slice because too many resources...
           .then(bookings => {
             const resourceEmails = Object.keys(bookings.data.calendars).filter(email => {
-              return emailFilter(status, date, dateTimeStart, bookings.data.calendars[email].busy, queryType);
+              return emailFilter(status, dateTimeStart, bookings.data.calendars[email].busy);
             });
             resourceEmails.forEach(email => {
               calendars[email] = bookings.data.calendars[email].busy;
@@ -549,7 +546,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
             return calFreebusy(dateTimeStart.toISOString(), dateTimeEnd.toISOString(), allEmails.slice(25))
               .then(bookings => {
                 const resourceEmails = Object.keys(bookings.data.calendars).filter(email => {
-                  return emailFilter(status, date, dateTimeStart, bookings.data.calendars[email].busy, queryType);
+                  return emailFilter(status, dateTimeStart, bookings.data.calendars[email].busy);
                 });
                 resourceEmails.forEach(email => {
                   calendars[email] = bookings.data.calendars[email].busy;
@@ -653,7 +650,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     var payload = {
       attachments: [
         {
-          fallback: "Here's some more rooms.",
+          fallback: "Here are some more rooms.",
           blocks: [{ type: "divider" }]
         }
       ]
@@ -707,19 +704,15 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                 })
                 .forEach(item => {
                   if (!unique.includes(item.summary)) {
-                    unique.push(item.summary);
+                    unique.push(item.summary); // Discount duplicates
                     events.push(item);
                   }
                 });
               events.sort(byTime);
-              console.log(
-                events.map(event => {
-                  return `${formatTime(event.start.dateTime)}, ${formatTime(event.end.dateTime)}`;
-                })
-              );
+
               if (events.length > 0) {
                 if (queryType) {
-                  if (dateTimeStart.getHours() < new Date(events[0].start.dateTime).getHours()) {
+                  if (parseInt(formatTime(dateTimeStart).split(":")[0]) < parseInt(formatTime(events[0].start.dateTime).split(":")[0])) {
                     agent.add(`It looks like ${roomInfo.userVisibleDescription} is free until ${formatTime(events[0].start.dateTime)}!`);
                     vr(roomInfo.resourceName, 1);
                     // agent.add(new Suggestion(`Book ${roomInfo.userVisibleDescription}`));
@@ -798,6 +791,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                     ]
                   };
                   events.slice(0, 10).forEach(event => {
+                    // Slack message API limitations
                     const block = [
                       {
                         type: "section",
@@ -1056,7 +1050,6 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
 
   function bookRoomFollowupYes(agent) {
     const context = agent.getContext("bookroom-followup");
-    console.log(context);
     const resource = context.parameters.resource;
     return calEventsInsert(adminId, resource)
       .then(() => {
@@ -1097,7 +1090,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     const todate = new Date();
 
     if (!time || agent.query.includes("now")) {
-      time = new Date(todate.setMinutes(todate.getMinutes() - 15)).toISOString().split("T")[1];
+      time = new Date(todate.setMinutes(todate.getMinutes() - 15)).toISOString().split("T")[1]; // Default to 15 minutes ago
     }
 
     const datetime = new Date(todate.toISOString().split("T")[0] + "T" + time)
@@ -1172,7 +1165,6 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
   function dog(agent) {
     const context = agent.getContext("bookroom-dog");
     var message = "Woof";
-    console.log(context);
     if (context) {
       message = context.parameters.message;
     }
